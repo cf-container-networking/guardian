@@ -73,6 +73,8 @@ func (p *ExternalBinaryNetworker) Network(log lager.Logger, containerSpec garden
 	cmd.Args = upArgs
 	cmdOutput := &bytes.Buffer{}
 	cmd.Stdout = cmdOutput
+	cmdStderr := &bytes.Buffer{}
+	cmd.Stderr = cmdStderr
 
 	input, err := cmd.StdinPipe()
 	if err != nil {
@@ -87,8 +89,11 @@ func (p *ExternalBinaryNetworker) Network(log lager.Logger, containerSpec garden
 
 	err = p.CommandRunner.Run(cmd)
 	if err != nil {
+		log.Error("external-networker-result", err, lager.Data{"output": cmdStderr.String()})
 		return err
 	}
+
+	log.Info("external-networker-result", lager.Data{"output": cmdStderr.String()})
 
 	if len(cmdOutput.Bytes()) == 0 {
 		return nil
