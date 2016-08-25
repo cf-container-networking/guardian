@@ -169,11 +169,11 @@ var _ = Describe("ExternalNetworker", func() {
 
 		Context("when the external plugin errors", func() {
 			BeforeEach(func() {
-				pluginErr = errors.New("external-plugin-error")
+				pluginErr = errors.New("banana")
 			})
 
 			It("returns the error", func() {
-				Expect(plugin.Network(logger, containerSpec, 42)).To(MatchError("external-plugin-error"))
+				Expect(plugin.Network(logger, containerSpec, 42)).To(MatchError("external networker: banana"))
 			})
 
 			It("collects and logs the stderr from the plugin", func() {
@@ -238,13 +238,56 @@ var _ = Describe("ExternalNetworker", func() {
 					return errors.New("boom")
 				})
 
-				Expect(plugin.Destroy(logger, "my-handle")).To(MatchError("boom"))
+				Expect(plugin.Destroy(logger, "my-handle")).To(MatchError("external networker: boom"))
 			})
 		})
 	})
+
 	Describe("NetIn", func() {
-		It("adds the port mapping", func() {
-			externalPort, containerPort, err := plugin.NetIn(logger, handle, 22, 33)
+		var pluginOutput string
+		var pluginErr error
+
+		BeforeEach(func() {
+			pluginErr = nil
+			fakeCommandRunner.WhenRunning(fake_command_runner.CommandSpec{
+				Path: "some/path",
+			}, func(cmd *exec.Cmd) error {
+				cmd.Stdout.Write([]byte(pluginOutput))
+				cmd.Stderr.Write([]byte("some-stderr-bytes"))
+				return pluginErr
+			})
+			pluginOutput = `{ "host_port": 22, "container_port": 33 }`
+		})
+
+		It("executes the external plugin with the correct args", func() {
+			_, _, err := plugin.NetIn(logger, handle, 0, 33)
+			Expect(err).NotTo(HaveOccurred())
+
+			cmd := fakeCommandRunner.ExecutedCommands()[0]
+			Expect(cmd.Path).To(Equal("some/path"))
+
+			Expect(cmd.Args).To(Equal([]string{
+				"some/path",
+				"arg1",
+				"arg2",
+				"arg3",
+				"--action", "net-in",
+				"--handle", "some-handle",
+				"--host-port", "0",
+				"--container-port", "33",
+			}))
+		})
+
+		It("returns the port pair returned by the plugin", func() {
+			hostPort, containerPort, err := plugin.NetIn(logger, handle, 0, 33)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(hostPort).To(Equal(uint32(22)))
+			Expect(containerPort).To(Equal(uint32(33)))
+		})
+
+		It("adds a port mapping for the port pair returned by the plugin", func() {
+			_, _, err := plugin.NetIn(logger, handle, 22, 33)
 			Expect(err).NotTo(HaveOccurred())
 
 			portMapping, ok := configStore.Get(handle, gardener.MappedPortsKey)
@@ -255,57 +298,16 @@ var _ = Describe("ExternalNetworker", func() {
 					ContainerPort: 33,
 				},
 			})))
-			Expect(externalPort).To(Equal(uint32(22)))
-			Expect(containerPort).To(Equal(uint32(33)))
 		})
 
-		Context("when the passed in external port is 0", func() {
+		Context("when the external plugin errors", func() {
 			BeforeEach(func() {
-				portPool.AcquireReturns(uint32(999), nil)
+				pluginErr = errors.New("boom")
 			})
-			It("acquires a port from the port pool", func() {
-				externalPort, containerPort, err := plugin.NetIn(logger, handle, 0, 33)
-				Expect(err).NotTo(HaveOccurred())
 
-				Expect(portPool.AcquireCallCount()).To(Equal(1))
-				portMapping, ok := configStore.Get(handle, gardener.MappedPortsKey)
-				Expect(ok).To(BeTrue())
-				Expect(portMapping).To(MatchJSON(mustMarshalJSON([]garden.PortMapping{
-					{
-						HostPort:      999,
-						ContainerPort: 33,
-					},
-				})))
-				Expect(externalPort).To(Equal(uint32(999)))
-				Expect(containerPort).To(Equal(uint32(33)))
-			})
-		})
-
-		Context("when the passed in container port is 0", func() {
-			It("uses the same value as the host port", func() {
-				externalPort, containerPort, err := plugin.NetIn(logger, handle, 4444, 0)
-				Expect(err).NotTo(HaveOccurred())
-
-				portMapping, ok := configStore.Get(handle, gardener.MappedPortsKey)
-				Expect(ok).To(BeTrue())
-				Expect(portMapping).To(MatchJSON(mustMarshalJSON([]garden.PortMapping{
-					{
-						HostPort:      4444,
-						ContainerPort: 4444,
-					},
-				})))
-				Expect(externalPort).To(Equal(uint32(4444)))
-				Expect(containerPort).To(Equal(uint32(4444)))
-			})
-		})
-
-		Context("when acquiring a port from the pool fails", func() {
-			BeforeEach(func() {
-				portPool.AcquireReturns(0, errors.New("banana"))
-			})
 			It("returns the error", func() {
-				_, _, err := plugin.NetIn(logger, handle, 0, 543)
-				Expect(err).To(MatchError("banana"))
+				_, _, err := plugin.NetIn(logger, handle, 22, 33)
+				Expect(err).To(MatchError("external networker: boom"))
 			})
 		})
 
